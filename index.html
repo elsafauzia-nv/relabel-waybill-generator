@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relabel Waybill Generator</title>
+  <meta name="description" content="Scan a tracking ID in the Operator V2 QA Cross Border Relabel Tool and get its real ZPL and waybill, through a local agent.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Relabel Waybill Generator</h1>
+      <p class="sub">Operator V2 QA · Cross Border Relabel Tool</p>
+    </div>
+    <button id="agentPill" class="pill pill-wait" type="button" aria-live="polite" title="Local agent status">
+      <span class="dot"></span><span id="agentText">Checking local agent…</span>
+    </button>
+  </header>
+
+  <div id="agentHelp" class="callout" hidden>
+    <strong>Local agent unavailable.</strong>
+    Start it on this computer, keep the window open, then click the status pill to retry:
+    <pre>cd &lt;folder with agent.py&gt; &amp;&amp; ./agent.py</pre>
+    If Chrome asks to let this site access devices on your local network, choose <em>Allow</em>.
+    <details>
+      <summary>Agent address</summary>
+      <label class="inline">URL <input id="agentUrl" type="url" spellcheck="false"></label>
+      <button id="agentSave" class="btn btn-small" type="button">Save &amp; retry</button>
+    </details>
+  </div>
+
+  <main class="layout">
+    <section class="card" aria-labelledby="formTitle">
+      <h2 id="formTitle">Scan</h2>
+      <form id="form" novalidate>
+        <div class="row">
+          <div>
+            <label for="country">Country</label>
+            <select id="country" required>
+              <option value="PH">PH</option>
+              <option value="MY">MY</option>
+            </select>
+          </div>
+          <div>
+            <label for="vendor">Vendor</label>
+            <select id="vendor" required></select>
+          </div>
+        </div>
+        <label for="tid">Tracking ID</label>
+        <input id="tid" type="text" autocomplete="off" spellcheck="false" maxlength="64"
+               placeholder="e.g. EL4PL1562310318577590272" required aria-describedby="formError">
+        <p id="formError" class="error" role="alert" hidden></p>
+        <div class="check">
+          <input id="noPrint" type="checkbox">
+          <label for="noPrint">Capture only, don't send the job to the printer</label>
+        </div>
+        <button id="start" class="btn btn-primary" type="submit" disabled>Start</button>
+      </form>
+
+      <div id="dupPanel" class="dup" hidden>
+        <p><strong id="dupTitle"></strong></p>
+        <p id="dupFiles" class="muted"></p>
+        <div class="dup-actions">
+          <button id="dupRegenerate" class="btn" type="button">Generate it again</button>
+          <span class="muted">or</span>
+          <input id="dupNewTid" type="text" placeholder="New tracking ID" aria-label="New tracking ID" spellcheck="false" maxlength="64">
+          <button id="dupReplace" class="btn" type="button">Replace with new ID</button>
+          <button id="dupCancel" class="btn btn-ghost" type="button">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="statusTitle">
+      <h2 id="statusTitle">Status</h2>
+      <div id="banner" class="banner banner-idle" role="status">Enter a tracking ID and click Start.</div>
+      <ol id="stages" class="stages"></ol>
+      <details id="logBox">
+        <summary>Run log</summary>
+        <pre id="log"></pre>
+      </details>
+    </section>
+
+    <section class="card result" aria-labelledby="zplTitle">
+      <div class="card-head">
+        <h2 id="zplTitle">Generated ZPL</h2>
+        <div class="actions">
+          <button id="copyZpl" class="btn btn-small" type="button" disabled>Copy ZPL</button>
+          <button id="downloadZpl" class="btn btn-small" type="button" disabled>Download ZPL</button>
+        </div>
+      </div>
+      <textarea id="zpl" readonly spellcheck="false" placeholder="The populated ZPL appears here."></textarea>
+      <ul id="checks" class="checks"></ul>
+    </section>
+
+    <section class="card result" aria-labelledby="previewTitle">
+      <div class="card-head">
+        <h2 id="previewTitle">Waybill</h2>
+        <div class="actions">
+          <button id="downloadPng" class="btn btn-small" type="button" disabled>Download waybill</button>
+          <button id="downloadPdf" class="btn btn-small" type="button" disabled>Download PDF</button>
+        </div>
+      </div>
+      <div id="preview" class="preview"><p class="muted">The waybill rendered from the ZPL appears here.</p></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Runs on your computer: the page talks only to the local agent at <code id="agentLabel"></code>.
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>
