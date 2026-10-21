@@ -18,9 +18,10 @@ Both run the same workflow code.
 
 ## For QA members: getting started
 
-You need a **Mac** with **Google Chrome** (or Edge) and [**uv**](https://docs.astral.sh/uv/) (`brew install uv`).
-The nv-label-printer app and Node.js are optional. With them, templates are filled with the app's own
-`label.js`; without them, with the verified Python copy, which gives byte-identical output.
+You need a **Mac** with **Google Chrome** (or Edge), [**uv**](https://docs.astral.sh/uv/) (`brew install uv`),
+and the **nv-label-printer app**, which must be **running and signed in for every scan** (see step 5).
+Node.js is optional: with it, templates are filled with the printer app's own `label.js`; without it,
+with the verified Python copy, which gives byte-identical output.
 
 1. Get the code and set it up, once:
    ```bash
@@ -37,8 +38,15 @@ The nv-label-printer app and Node.js are optional. With them, templates are fill
    connected*.
 4. The first scan opens the agent's own Chrome window. Sign in to Operator V2 there with **your own**
    account. It is remembered in `.browser-profile/` inside your copy.
-5. Your Operator V2 account needs a **Socket Printer** as its active printer. Otherwise there is no
-   print event to capture. Tick **Capture only** if you don't want a label printed.
+5. Before every scan, the **nv-label-printer app must be running and signed in**: open it, then in
+   Operator V2 go to *Settings → Open label printer*. Operator V2 only sends a scan's print job after a
+   printer app has answered its printer status request. Without a running, signed-in app it waits
+   forever, there is nothing to capture, and the run fails at *Matching print event*. This applies to
+   **Capture only** runs too.
+6. Your Operator V2 account needs a **Socket Printer** as its active printer, and it must be the one
+   whose address matches your printer app. Otherwise there is no print event to capture. Tick
+   **Capture only** if you don't want a label printed. If no label printer is selected in the app,
+   real print jobs only queue there; nothing comes out.
 
 Waybills are saved in `output/` inside your copy. **Never share** `.browser-profile/`: it holds your
 signed-in Operator V2 session. `output/` holds QA shipment data.
@@ -129,7 +137,7 @@ under *Agent address* on the page.
 | 403 "origin not allowed" in the agent | The page was opened from another address: add it with `--allow-origin`. |
 | Stuck at "Authenticated browser" | Sign in to Operator V2 in the Chrome window the agent opened (10 minutes allowed). |
 | Scan result failed | Shows Operator V2's own message, e.g. `<TID> not found`, or `No relabel label found` when the vendor is wrong. |
-| "Matching print event" timeout | Operator V2 accepted the ID but sent no `PRINTER:PRINT` within 45 s. Check the relabel tool's print log in the agent's Chrome window. |
+| "Matching print event" timeout | Operator V2 accepted the ID but sent no `PRINTER:PRINT` within 45 s. Most often, the **nv-label-printer app is not running or not signed in**: Operator V2 waits for a printer app to answer before it sends any print job. Open the app, sign it in (Operator V2 *Settings → Open label printer*), then scan again. Otherwise check the relabel tool's print log in the agent's Chrome window. |
 | Print-event socket failure | Operator V2 has no Socket Printer selected, or `wss-qa.ninjavan.co` is unreachable. |
 | Generating ZPL failed: unresolved placeholders | The event lacks a field the template needs; the message names it. This is an Operator V2 / template mismatch, not a capture problem. |
 | Validating ZPL warnings | Remarks over the template's box, or font notes for characters the template font can't display. The waybill shows what would print. |
@@ -138,9 +146,10 @@ under *Agent address* on the page.
 
 ## Setup (once)
 
-Requirements: macOS with Google Chrome, [uv](https://docs.astral.sh/uv/), Node.js, and the
-**nv-label-printer** agent (`/Applications/nv-label-printer-ason.app`). The script runs the agent's
-own `label.js` to fill the template.
+Requirements: macOS with Google Chrome, [uv](https://docs.astral.sh/uv/), and the **nv-label-printer**
+app (`/Applications/nv-label-printer-ason.app`), **running and signed in for every scan**. Operator V2
+only sends a scan's print job after a printer app has answered. Node.js is optional; with it, the
+script fills the template with the app's own `label.js`, otherwise with the verified Python copy.
 
 ```bash
 cd <path to>/relabel-waybill-generator
