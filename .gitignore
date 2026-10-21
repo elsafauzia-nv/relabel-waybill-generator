@@ -1,0 +1,11 @@
+# Signed-in Operator V2 browser session (cookies, tokens) - never commit
+.browser-profile/
+# Generated waybills contain QA shipment data
+output/
+# Local environment and caches
+.venv/
+__pycache__/
+.ruff_cache/
+*.pyc
+.DS_Store
+*.zip
