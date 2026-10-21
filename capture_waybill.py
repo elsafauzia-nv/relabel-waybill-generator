@@ -31,6 +31,7 @@ from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 import artifacts  # noqa: E402
 import browser  # noqa: E402
 import labelary  # noqa: E402
+import printer_check  # noqa: E402
 import prompts  # noqa: E402
 import report  # noqa: E402
 from field_checks import check_fields  # noqa: E402
@@ -115,7 +116,15 @@ async def prepare_tool(context: BrowserContext, inputs: prompts.RunInputs, args:
             "reload Operator V2 or check the printer settings, then run again",
         )
     info(f"printer '{printer.get('name')}' (Socket Printer) - connected to {', '.join(state.urls)} /printers")
-    stage("browser", "ok", "Signed in to Operator V2; print-event socket connected")
+    stage("browser", "running", "Verifying the active printer on Operator V2 - Printers")
+    summary = printer_check.verify(
+        inputs.country,
+        printer_check.local_printer_room(),
+        await printer_check.read_printers_page(page.context, inputs.country),
+        printer,
+    )
+    ok(f"Active printer verified: {summary}")
+    stage("browser", "ok", f"Signed in to Operator V2; active printer verified: {summary}")
 
     step(4, f"Selecting vendor {inputs.vendor}")
     stage("submit", "running", f"Selecting vendor {inputs.vendor} and submitting {inputs.tracking_id}")

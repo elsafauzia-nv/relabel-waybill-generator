@@ -22,6 +22,7 @@ class Failure(Enum):
     UNRESOLVED_PLACEHOLDERS = (14, "unresolved template placeholders")
     DUPLICATE = (15, "duplicate tracking ID")
     VERIFICATION = (16, "waybill verification failed")
+    PRINTER_MISMATCH = (17, "active printer mismatch")
 
     @property
     def exit_code(self) -> int:

@@ -43,10 +43,21 @@ with the verified Python copy, which gives byte-identical output.
    printer app has answered its printer status request. Without a running, signed-in app it waits
    forever, there is nothing to capture, and the run fails at *Matching print event*. This applies to
    **Capture only** runs too.
-6. Your Operator V2 account needs a **Socket Printer** as its active printer, and it must be the one
-   whose address matches your printer app. Otherwise there is no print event to capture. Tick
-   **Capture only** if you don't want a label printed. If no label printer is selected in the app,
-   real print jobs only queue there; nothing comes out.
+6. On **Operator V2 – Printers** (https://operatorv2-qa.ninjavan.co/react/#/ph/printers), **your own
+   printer** must be the *Current active printer* with **Is Default Printer? = true**. Your printer is
+   the one whose address is `wss:<your printer app's id>`. The script checks this **before every scan**
+   and stops (exit code 17, *active printer mismatch*) if any of these differ:
+   * this computer's printer app (its id, e.g. `rtwowbvm` → `wss:rtwowbvm`);
+   * the current active printer on the Printers page, and that printer's *Is Default Printer?*;
+   * the printer the relabel tool would print to in this browser session.
+
+   Otherwise the print job would go to someone else's printer room, typically failing with *printer
+   WebSocket failure … (socket closed)*. The script never changes these settings; fix them on the
+   Printers page, then scan again. **Only one printer in the list is the default at a time**, so if
+   another QA member's printer holds it, coordinate before switching.
+
+   Tick **Capture only** if you don't want a label printed. If no label printer is selected in the
+   app, real print jobs only queue there; nothing comes out.
 
 Waybills are saved in `output/` inside your copy. **Never share** `.browser-profile/`: it holds your
 signed-in Operator V2 session. `output/` holds QA shipment data.
@@ -137,6 +148,8 @@ under *Agent address* on the page.
 | 403 "origin not allowed" in the agent | The page was opened from another address: add it with `--allow-origin`. |
 | Stuck at "Authenticated browser" | Sign in to Operator V2 in the Chrome window the agent opened (10 minutes allowed). |
 | Scan result failed | Shows Operator V2's own message, e.g. `<TID> not found`, or `No relabel label found` when the vendor is wrong. |
+| Active printer mismatch (exit code 17) | The message lists what differs: this computer's printer `wss:<id>`, the Printers page's current active printer and its *Is Default Printer?*, and the session's printer. On Operator V2 – Printers, make your own printer the active one with *Is Default Printer?* = true, then scan again. |
+| Printer WebSocket failure (socket closed) during the scan | The job went to another printer's room. Run again: the active printer check now catches this before scanning. |
 | "Matching print event" timeout | Operator V2 accepted the ID but sent no `PRINTER:PRINT` within 45 s. Most often, the **nv-label-printer app is not running or not signed in**: Operator V2 waits for a printer app to answer before it sends any print job. Open the app, sign it in (Operator V2 *Settings → Open label printer*), then scan again. Otherwise check the relabel tool's print log in the agent's Chrome window. |
 | Print-event socket failure | Operator V2 has no Socket Printer selected, or `wss-qa.ninjavan.co` is unreachable. |
 | Generating ZPL failed: unresolved placeholders | The event lacks a field the template needs; the message names it. This is an Operator V2 / template mismatch, not a capture problem. |
@@ -287,7 +300,7 @@ waybill, and the next successful scan clears them.
 Exit codes: 0 OK, 2 invalid tracking ID, 3 vendor mismatch, 4 Operator V2 error, 5 timeout, 6 missing
 print event, 7 WebSocket failure, 8 non-socket printer, 9 ZPL extraction, 10 Labelary, 11 sign-in, 12
 browser, 13 input, 14 unresolved placeholders, 15 duplicate (non-interactive, no
-`--force`/`--replace-with`), 16 verification. No waybill is saved unless every step succeeded.
+`--force`/`--replace-with`), 16 verification, 17 active printer mismatch. No waybill is saved unless every step succeeded.
 
 ## Code layout
 
@@ -299,6 +312,7 @@ browser, 13 input, 14 unresolved placeholders, 15 duplicate (non-interactive, no
 | `field_checks.py` | remarks / fourth sorting code / goods and pieces checks |
 | `docs/` | the GitHub Pages UI (static HTML, CSS, JS) |
 | `prompts.py` | country / vendor / tracking ID prompts, validation, duplicate decision |
+| `printer_check.py` | checks, before every scan, that this computer's printer app is the active, default printer on Operator V2 – Printers |
 | `browser.py` | browser profile, sign-in, vendor selection, scan, error notifications, lookup watcher |
 | `ws_capture.py` | Socket.IO parsing, printer-socket monitoring, matching `PRINTER:PRINT` to the scan |
 | `zpl_extract.py` | filling the template with the agent's `label.js`, placeholder rules, validation, encoding |

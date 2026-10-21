@@ -158,7 +158,7 @@ async def relabel_frame(page: Page) -> Frame:
 
 
 async def read_printer_config(page: Page) -> dict[str, Any] | None:
-    """Operator V2's selected printer (localStorage 'printer'), without its address."""
+    """Operator V2's active printer for this session (localStorage 'printer'): name, version, address."""
     raw = await page.evaluate("() => localStorage.getItem('printer')")
     try:
         printer = json.loads(raw) if raw else None
@@ -167,7 +167,8 @@ async def read_printer_config(page: Page) -> dict[str, Any] | None:
     if not isinstance(printer, dict):
         return None
     address = str(printer.get("address") or printer.get("ip_address") or "")
-    return {"name": printer.get("name"), "version": printer.get("version"), "address_scheme": address.split(":")[0]}
+    return {"name": printer.get("name"), "version": printer.get("version"), "address": address,
+            "address_scheme": address.split(":")[0]}
 
 
 # ------------------------------------------------------------------------- tool UI
