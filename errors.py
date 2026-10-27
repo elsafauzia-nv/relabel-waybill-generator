@@ -23,7 +23,6 @@ class Failure(Enum):
     DUPLICATE = (15, "duplicate tracking ID")
     VERIFICATION = (16, "waybill verification failed")
     PRINTER_MISMATCH = (17, "active printer mismatch")
-    PRINTER_APP_NOT_ANSWERING = (18, "printer app not answering")
 
     @property
     def exit_code(self) -> int:

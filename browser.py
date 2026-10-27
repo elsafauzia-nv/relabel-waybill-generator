@@ -202,6 +202,27 @@ async def tool_messages(frame: Frame) -> list[dict[str, Any]]:
     return []
 
 
+async def print_log_status(frame: Frame, tracking_id: str) -> str | None:
+    """Status of the newest print-log row for this tracking ID: "Printing", "Success", or an error text.
+
+    The tool's print log is a grid of three cells per row - NV tracking ID, external ID, status -
+    newest row first.
+    """
+    with contextlib.suppress(PlaywrightError):
+        return await frame.evaluate(
+            """(tid) => {
+                for (const cell of document.querySelectorAll('div')) {
+                    if (cell.children.length || cell.textContent.trim() !== tid) continue;
+                    const status = cell.nextElementSibling && cell.nextElementSibling.nextElementSibling;
+                    if (status) return status.innerText.trim();
+                }
+                return null;
+            }""",
+            tracking_id,
+        )
+    return None
+
+
 async def scan_tracking_id(frame: Frame, tracking_id: str) -> None:
     """Type the tracking ID into the tool and submit it exactly once (Enter), like a scanner."""
     tid_input = frame.locator(TID_INPUT).locator("xpath=descendant-or-self::input").first

@@ -40,6 +40,8 @@ from ws_capture import PrintEvent, PrinterSocketMonitor, job_tracking_ids  # noq
 from zpl_extract import DEFAULT_AGENT_LABEL_JS, PopulatedZpl, populate, preview_with_blank_fields  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+LOOKUP_TIMEOUT = 45  # seconds for Operator V2 to accept or reject the scanned tracking ID
+APP_ANSWER_GRACE = 10  # seconds to look for the printer app's answer before scanning (informational only)
 SOCKET_GONE_AFTER = 8  # seconds without any printer socket before the scan counts as a socket failure
 SOCKET_PRINTER_VERSION = 5  # Operator V2 "Socket Printer"; versions 1-4 are HTTP boxes
 
@@ -126,18 +128,22 @@ async def prepare_tool(context: BrowserContext, inputs: prompts.RunInputs, args:
     )
     ok(f"Active printer verified: {summary}")
 
-    # Operator V2 only sends print jobs once a printer app has answered its PRINTER:GATHER; until then it keeps
-    # closing and reopening the printer socket. Scanning before that answer means no print job (or a scan that
-    # runs into one of those routine reconnects), so wait for it.
+    # Operator V2 holds a scan's print job ("Printing...") until the nv-label-printer app has answered its
+    # PRINTER:GATHER, then sends it ("Success"). The app can take minutes after a reconnect, so this only notes
+    # its state; the wait happens after the scan (scan_and_capture).
     room = str(printer.get("address") or "").removeprefix("wss:")
-    stage("browser", "running", f"Waiting for the nv-label-printer app to answer Operator V2 (room wss:{room})")
-    answer = await wait_for_printer_app(args.monitor, room, args.socket_timeout)
-    info(f"printer app answered for wss:{room}: {answer.get('status')} ('{answer.get('name')}')")
-    if answer.get("status") != "ONLINE" and not args.no_print:
-        warn(f"the printer app reports {answer.get('status')}: no label printer is selected in it, so the print job "
-             "will wait in the app and nothing comes out (select the printer in the nv-label-printer window)")
-    stage("browser", "ok", f"Signed in to Operator V2; active printer verified: {summary}; printer app answered "
-                           f"({answer.get('status')})")
+    args.printer_room = room
+    answer = await wait_for_printer_app(args.monitor, room, APP_ANSWER_GRACE)
+    if answer:
+        info(f"printer app answered for wss:{room}: {answer.get('status')} ('{answer.get('name')}')")
+        if answer.get("status") != "ONLINE" and not args.no_print:
+            warn(f"the printer app reports {answer.get('status')}: no label printer is selected in it, so the print job "
+                 "will wait in the app and nothing comes out (select the printer in the nv-label-printer window)")
+    else:
+        info(f"the printer app has not answered for wss:{room} yet - Operator V2 will show 'Printing...' until it "
+             f"does; the tool waits up to {_minutes(args.timeout)} after the scan")
+    stage("browser", "ok", f"Signed in to Operator V2; active printer verified: {summary}; printer app "
+                           + (f"answered ({answer.get('status')})" if answer else "not answered yet"))
 
     step(4, f"Selecting vendor {inputs.vendor}")
     stage("submit", "running", f"Selecting vendor {inputs.vendor} and submitting {inputs.tracking_id}")
@@ -147,24 +153,25 @@ async def prepare_tool(context: BrowserContext, inputs: prompts.RunInputs, args:
     return page, frame
 
 
-async def wait_for_printer_app(monitor: PrinterSocketMonitor, room: str, seconds: float) -> dict:
-    """The printer app's PRINTER:UPDATE answer for this room, waiting up to ``seconds``."""
+async def wait_for_printer_app(monitor: PrinterSocketMonitor, room: str, seconds: float) -> dict | None:
+    """The printer app's PRINTER:UPDATE answer for this room, waiting up to ``seconds`` (None if none yet)."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         answer = monitor.app_answer(room)
         if answer:
             return answer
         await asyncio.sleep(0.25)
-    raise RunError(
-        Failure.PRINTER_APP_NOT_ANSWERING,
-        f"the nv-label-printer app did not answer Operator V2 for wss:{room} within {seconds:.0f}s, so Operator V2 "
-        "would never send the print job",
-        "open the nv-label-printer app and sign it in (Operator V2 Settings -> Open label printer), then scan again",
-    )
+    return None
+
+
+def _minutes(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m}m {s:02d}s" if m else f"{s}s"
 
 
 async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argparse.Namespace) -> PrintEvent:
-    step(5, f"Scanning {inputs.tracking_id} and waiting for its PRINTER:PRINT event (timeout {args.timeout:.0f}s)")
+    step(5, f"Scanning {inputs.tracking_id} and waiting up to {_minutes(args.timeout)} for Operator V2 to send its print job "
+            "(print status 'Printing...' -> 'Success')")
     monitor: PrinterSocketMonitor = args.monitor
     await browser.watch_tool_messages(frame)
     lookup = args.lookups.expect(inputs.tracking_id)
@@ -173,9 +180,13 @@ async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argpar
     stage("submit", "ok", f"{inputs.tracking_id} submitted through the relabel tool")
     stage("scan", "running", "Waiting for Operator V2 to accept the tracking ID")
 
-    deadline = time.monotonic() + args.timeout
+    scanned_at = time.monotonic()
+    deadline = scanned_at + args.timeout
+    lookup_deadline = scanned_at + LOOKUP_TIMEOUT
     error_seen_at: float | None = None
     scan_accepted = False
+    print_status: str | None = None
+    status_read_at = 0.0
     while not event_future.done():
         messages = [m["text"] for m in await browser.tool_messages(frame) if m.get("error", True)]
         shown = f'Operator V2 says: "{" | ".join(messages)}"' if messages else None
@@ -206,6 +217,21 @@ async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argpar
                 scan_accepted = True
                 stage("scan", "ok", f"Operator V2 accepted {inputs.tracking_id} (external {lookup.external_tracking_id})")
                 stage("event", "running", "Waiting for the matching PRINTER:PRINT event")
+        if scan_accepted and time.monotonic() - status_read_at > 2:
+            # Operator V2's own print log: "Printing" until the printer app has answered, then "Success" (or an error).
+            status_read_at = time.monotonic()
+            status = await browser.print_log_status(frame, inputs.tracking_id)
+            if status and status != print_status:
+                print_status = status
+                info(f"Operator V2 print status: {status}")
+            if status and not status.lower().startswith(("printing", "success")):
+                raise RunError(Failure.OPERATOR_ERROR, f'Operator V2 could not print {inputs.tracking_id}: "{status}"')
+            answered = monitor.app_answer(getattr(args, "printer_room", "") or "")
+            stage("event", "running",
+                  f"Operator V2 print status: {print_status or 'Printing'} - "
+                  + ("printer app answered, waiting for the print job" if answered
+                     else "waiting for the nv-label-printer app to answer")
+                  + f" ({_minutes(time.monotonic() - scanned_at)} / {_minutes(args.timeout)})")
         if shown:
             # An error toast without a failed mapping lookup (e.g. the order lookup failed). Give a late
             # print event a moment, then report what the tool said.
@@ -220,19 +246,21 @@ async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argpar
                 Failure.WEBSOCKET_FAILURE,
                 f"the printer WebSocket failed during the scan and did not come back within {SOCKET_GONE_AFTER:.0f}s ({detail})",
             )
-        if time.monotonic() > deadline:
-            if lookup.done.is_set():
-                raise RunError(
-                    Failure.MISSING_PRINT_EVENT,
-                    f"Operator V2 accepted {inputs.tracking_id} (external {lookup.external_tracking_id}) but sent no "
-                    f"PRINTER:PRINT event within {args.timeout:.0f}s",
-                    "check the tool's print log in the browser; a 'Success' there without an event means the job "
-                    "was not sent over the printer socket",
-                )
+        if not lookup.done.is_set() and time.monotonic() > lookup_deadline:
             raise RunError(
                 Failure.TIMEOUT,
-                f"no response to the scan within {args.timeout:.0f}s (no lookup result, no print event)",
-                "check the browser window, then run again (raise --timeout on a slow network)",
+                f"no response to the scan within {LOOKUP_TIMEOUT}s (no lookup result, no print event)",
+                "check the browser window, then run again",
+            )
+        if time.monotonic() > deadline:
+            answered = monitor.app_answer(getattr(args, "printer_room", "") or "")
+            raise RunError(
+                Failure.MISSING_PRINT_EVENT,
+                f"Operator V2 accepted {inputs.tracking_id} (external {lookup.external_tracking_id}) but did not send "
+                f"its print job within {_minutes(args.timeout)} (print status: {print_status or 'Printing'}; printer app "
+                + ("answered" if answered else "never answered") + ")",
+                "open the nv-label-printer app and make sure it is signed in (Operator V2 Settings -> Open label "
+                "printer), then scan again - or wait longer with --timeout",
             )
         await asyncio.sleep(0.25)
     if not scan_accepted:  # the print event arrived before the lookup response was read
@@ -511,7 +539,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--replace-with", metavar="NEW_TID", help="if --tid already has a waybill, replace it with this tracking ID")
     p.add_argument("--force", action="store_true", help="if the tracking ID already has a waybill, generate it again")
     p.add_argument("--no-print", action="store_true", help="capture the print job but do not send it to the printer")
-    p.add_argument("--timeout", type=float, default=45, help="seconds to wait for the PRINTER:PRINT event (default 45)")
+    p.add_argument("--timeout", type=float, default=300,
+                   help="seconds to wait after the scan for Operator V2 to send the print job, i.e. its print status to "
+                        "go from 'Printing...' to 'Success' (default 300)")
     p.add_argument("--socket-timeout", type=float, default=30, help="seconds to wait for the printer socket (default 30)")
     p.add_argument("--status-wait", type=float, default=20, help="seconds to wait for the printer agent's status")
     p.add_argument("--login-timeout", type=float, default=600, help="seconds allowed for a manual sign-in")
