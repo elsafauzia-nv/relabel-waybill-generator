@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +25,9 @@ from playwright.async_api import BrowserContext, Page, WebSocket, WebSocketRoute
 PRINTER_NAMESPACE = "/printers"
 PRINT_EVENT = "PRINTER:PRINT"
 JOB_UPDATE_EVENTS = ("PRINTER:UPDATE_JOB", "PRINT:UPDATE_JOB")
+# A printer app's answer to the page's PRINTER:GATHER: {id: <room>, status: ONLINE|OFFLINE, name}. Operator V2
+# closes and reopens its printer socket every ~2 s until one arrives, and only then sends print jobs.
+APP_ANSWER_EVENT = "PRINTER:UPDATE"
 SENSITIVE_KEY = re.compile(r"token|authorization|auth$|password|secret|cookie", re.I)
 
 # Engine.IO "4" (message) + Socket.IO packet type, optional "/namespace," (connect frames may carry
@@ -121,8 +125,13 @@ class SocketState:
     urls: list[str] = field(default_factory=list)
     connected: bool = False
     connect_error: str | None = None
-    closed: bool = False
     socket_error: str | None = None
+    open_sockets: int = 0
+    all_closed_since: float | None = None  # monotonic time the last open printer socket closed
+
+    def lost_for(self, seconds: float) -> bool:
+        """True when no socket has been open for ``seconds`` (a routine close + reopen is not a loss)."""
+        return self.all_closed_since is not None and time.monotonic() - self.all_closed_since > seconds
 
 
 class PrinterSocketMonitor:
@@ -138,6 +147,7 @@ class PrinterSocketMonitor:
         self.ignored: list[str] = []  # tracking IDs of print events that were not ours
         self.duplicates = 0
         self.job_updates: dict[str, list[str]] = {}  # external tracking ID -> agent statuses
+        self.app_answers: list[dict[str, Any]] = []  # PRINTER:UPDATE answers of printer apps, in order
         self._expected: tuple[str, asyncio.Future[PrintEvent]] | None = None
 
     async def attach(self, context: BrowserContext) -> None:
@@ -163,14 +173,16 @@ class PrinterSocketMonitor:
         if "/socket.io/" not in ws.url:
             return
         url = safe_socket_url(ws.url)
+        self._on_open()
         ws.on("framesent", lambda payload: self._from_page(payload, url, forwarded=True))
         ws.on("framereceived", lambda payload: self._from_server(payload, url))
         ws.on("socketerror", lambda error: self._on_socket_error(url, error))
-        ws.on("close", lambda _ws: self._on_close(url))
+        ws.on("close", lambda _ws: self._on_close())
 
     def _proxy(self, route: WebSocketRoute) -> None:
         url = safe_socket_url(route.url)
         server = route.connect_to_server()
+        self._on_open()
 
         def from_page(message: str | bytes) -> None:
             packet = parse_sio_frame(message)
@@ -212,6 +224,8 @@ class PrinterSocketMonitor:
             data = packet.data
             message = data.get("message") if isinstance(data, dict) else data
             self.state.connect_error = str(message or "connection refused by server")
+        for answer in find_events(packet, (APP_ANSWER_EVENT,)):
+            self.app_answers.append({k: answer.get(k) for k in ("id", "status", "name")})
         for update in find_events(packet, JOB_UPDATE_EVENTS):
             status = f"{update['event']}={update.get('status')}"
             if update.get("error"):
@@ -221,9 +235,19 @@ class PrinterSocketMonitor:
     def _on_socket_error(self, url: str, error: str) -> None:
         self.state.socket_error = f"{url}: {error}"
 
-    def _on_close(self, url: str) -> None:
-        if url in self.state.urls:
-            self.state.closed = True
+    def _on_open(self) -> None:
+        self.state.open_sockets += 1
+        self.state.all_closed_since = None
+
+    def _on_close(self) -> None:
+        self.state.open_sockets = max(0, self.state.open_sockets - 1)
+        if self.state.open_sockets == 0:
+            self.state.all_closed_since = time.monotonic()
+
+    def app_answer(self, room: str) -> dict[str, Any] | None:
+        """The printer app's latest answer for this room (ONLINE preferred), if any."""
+        mine = [a for a in self.app_answers if str(a.get("id") or "") == room]
+        return next((a for a in reversed(mine) if a.get("status") == "ONLINE"), mine[-1] if mine else None)
 
     def _on_print_job(self, message: dict, job: dict, url: str, namespace: str, forwarded: bool) -> None:
         nv, ext = job_tracking_ids(job)

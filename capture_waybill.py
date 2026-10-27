@@ -40,6 +40,7 @@ from ws_capture import PrintEvent, PrinterSocketMonitor, job_tracking_ids  # noq
 from zpl_extract import DEFAULT_AGENT_LABEL_JS, PopulatedZpl, populate, preview_with_blank_fields  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+SOCKET_GONE_AFTER = 8  # seconds without any printer socket before the scan counts as a socket failure
 SOCKET_PRINTER_VERSION = 5  # Operator V2 "Socket Printer"; versions 1-4 are HTTP boxes
 
 
@@ -124,7 +125,19 @@ async def prepare_tool(context: BrowserContext, inputs: prompts.RunInputs, args:
         printer,
     )
     ok(f"Active printer verified: {summary}")
-    stage("browser", "ok", f"Signed in to Operator V2; active printer verified: {summary}")
+
+    # Operator V2 only sends print jobs once a printer app has answered its PRINTER:GATHER; until then it keeps
+    # closing and reopening the printer socket. Scanning before that answer means no print job (or a scan that
+    # runs into one of those routine reconnects), so wait for it.
+    room = str(printer.get("address") or "").removeprefix("wss:")
+    stage("browser", "running", f"Waiting for the nv-label-printer app to answer Operator V2 (room wss:{room})")
+    answer = await wait_for_printer_app(args.monitor, room, args.socket_timeout)
+    info(f"printer app answered for wss:{room}: {answer.get('status')} ('{answer.get('name')}')")
+    if answer.get("status") != "ONLINE" and not args.no_print:
+        warn(f"the printer app reports {answer.get('status')}: no label printer is selected in it, so the print job "
+             "will wait in the app and nothing comes out (select the printer in the nv-label-printer window)")
+    stage("browser", "ok", f"Signed in to Operator V2; active printer verified: {summary}; printer app answered "
+                           f"({answer.get('status')})")
 
     step(4, f"Selecting vendor {inputs.vendor}")
     stage("submit", "running", f"Selecting vendor {inputs.vendor} and submitting {inputs.tracking_id}")
@@ -132,6 +145,22 @@ async def prepare_tool(context: BrowserContext, inputs: prompts.RunInputs, args:
     frame = await browser.relabel_frame(page)
     await browser.select_vendor(frame, inputs.vendor)
     return page, frame
+
+
+async def wait_for_printer_app(monitor: PrinterSocketMonitor, room: str, seconds: float) -> dict:
+    """The printer app's PRINTER:UPDATE answer for this room, waiting up to ``seconds``."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        answer = monitor.app_answer(room)
+        if answer:
+            return answer
+        await asyncio.sleep(0.25)
+    raise RunError(
+        Failure.PRINTER_APP_NOT_ANSWERING,
+        f"the nv-label-printer app did not answer Operator V2 for wss:{room} within {seconds:.0f}s, so Operator V2 "
+        "would never send the print job",
+        "open the nv-label-printer app and sign it in (Operator V2 Settings -> Open label printer), then scan again",
+    )
 
 
 async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argparse.Namespace) -> PrintEvent:
@@ -184,9 +213,13 @@ async def scan_and_capture(frame: Frame, inputs: prompts.RunInputs, args: argpar
             if time.monotonic() - error_seen_at > 2:
                 failure = Failure.INVALID_TRACKING_ID if "not found" in shown.lower() else Failure.OPERATOR_ERROR
                 raise RunError(failure, shown)
-        if monitor.state.closed or monitor.state.connect_error or monitor.state.socket_error:
+        # Operator V2 closes and reopens its printer socket by design; only a socket that stays gone is a failure.
+        if monitor.state.connect_error or monitor.state.lost_for(SOCKET_GONE_AFTER):
             detail = monitor.state.connect_error or monitor.state.socket_error or "socket closed"
-            raise RunError(Failure.WEBSOCKET_FAILURE, f"the printer WebSocket failed during the scan ({detail})")
+            raise RunError(
+                Failure.WEBSOCKET_FAILURE,
+                f"the printer WebSocket failed during the scan and did not come back within {SOCKET_GONE_AFTER:.0f}s ({detail})",
+            )
         if time.monotonic() > deadline:
             if lookup.done.is_set():
                 raise RunError(

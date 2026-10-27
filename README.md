@@ -39,7 +39,9 @@ with the verified Python copy, which gives byte-identical output.
 4. The first scan opens the agent's own Chrome window. Sign in to Operator V2 there with **your own**
    account. It is remembered in `.browser-profile/` inside your copy.
 5. Before every scan, the **nv-label-printer app must be running and signed in**: open it, then in
-   Operator V2 go to *Settings → Open label printer*. Operator V2 only sends a scan's print job after a
+   Operator V2 go to *Settings → Open label printer* (again after every restart of the app - it comes back
+   signed out). The tool waits up to 30 s for the app to answer Operator V2 before scanning and stops with
+   *printer app not answering* if it doesn't. Operator V2 only sends a scan's print job after a
    printer app has answered its printer status request. Without a running, signed-in app it waits
    forever, there is nothing to capture, and the run fails at *Matching print event*. This applies to
    **Capture only** runs too.
@@ -149,7 +151,9 @@ under *Agent address* on the page.
 | Stuck at "Authenticated browser" | Sign in to Operator V2 in the Chrome window the agent opened (10 minutes allowed). |
 | Scan result failed | Shows Operator V2's own message, e.g. `<TID> not found`, or `No relabel label found` when the vendor is wrong. |
 | Active printer mismatch (exit code 17) | The message lists what differs: this computer's printer `wss:<id>`, the Printers page's current active printer and its *Is Default Printer?*, and the session's printer. On Operator V2 – Printers, make your own printer the active one with *Is Default Printer?* = true, then scan again. |
-| Printer WebSocket failure (socket closed) during the scan | The job went to another printer's room. Run again: the active printer check now catches this before scanning. |
+| Printer app not answering (exit code 18) | Before scanning, the tool waits up to 30 s for your nv-label-printer app to answer Operator V2 for your printer room. Until it answers, Operator V2 keeps closing and reopening its printer socket every ~2 s and never sends a print job. The app is not running, or is signed out (it signs out when it restarts): open it and click Operator V2 *Settings → Open label printer*, then scan again. |
+| Warning "printer app reports OFFLINE" | The app is signed in, but no label printer is selected in it: a real print job waits in the app and nothing comes out. Select the printer in the nv-label-printer window (it must be installed on the Mac). Capture only is unaffected. |
+| Printer WebSocket failure during the scan | Operator V2's printer socket closed and **no socket came back within 8 s** (a routine close + reopen is not a failure). Check the network to `wss-qa.ninjavan.co`, then scan again. Older versions reported *socket closed* whenever Operator V2 reconnected while the printer app was slow to answer; update with `git pull`. |
 | "Matching print event" timeout | Operator V2 accepted the ID but sent no `PRINTER:PRINT` within 45 s. Most often, the **nv-label-printer app is not running or not signed in**: Operator V2 waits for a printer app to answer before it sends any print job. Open the app, sign it in (Operator V2 *Settings → Open label printer*), then scan again. Otherwise check the relabel tool's print log in the agent's Chrome window. |
 | Print-event socket failure | Operator V2 has no Socket Printer selected, or `wss-qa.ninjavan.co` is unreachable. |
 | Generating ZPL failed: unresolved placeholders | The event lacks a field the template needs; the message names it. This is an Operator V2 / template mismatch, not a capture problem. |
@@ -300,7 +304,7 @@ waybill, and the next successful scan clears them.
 Exit codes: 0 OK, 2 invalid tracking ID, 3 vendor mismatch, 4 Operator V2 error, 5 timeout, 6 missing
 print event, 7 WebSocket failure, 8 non-socket printer, 9 ZPL extraction, 10 Labelary, 11 sign-in, 12
 browser, 13 input, 14 unresolved placeholders, 15 duplicate (non-interactive, no
-`--force`/`--replace-with`), 16 verification, 17 active printer mismatch. No waybill is saved unless every step succeeded.
+`--force`/`--replace-with`), 16 verification, 17 active printer mismatch, 18 printer app not answering. No waybill is saved unless every step succeeded.
 
 ## Code layout
 
